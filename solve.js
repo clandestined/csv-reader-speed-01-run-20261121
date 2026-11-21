@@ -246,10 +246,20 @@ export function run(input) {
         if (ended !== COMMA) recordDone = true;
       } else {
         // A run of unquoted fields, up to the next quoted field (',"'), the
-        // next line break, or the end of the text.
+        // next line break, or the end of the text. The line is cut out
+        // first and ',"' is searched inside it only: searching the whole
+        // rest of the text would re-scan it on every line of a file with
+        // no quotes at all, which turns a quoteless file quadratic.
         lastQuoted = false;
-        const cq = text.indexOf(',"', pos);
         const nn = text.indexOf('\n', pos);
+        const lineEnd = nn === -1 ? len : nn;
+        // A trailing CR just before the line break is the CRLF break, not
+        // part of a field (at the end of the text it is a stray CR, and
+        // stays in the field for the fallback to drop with its error).
+        let segEnd = lineEnd;
+        if (nn !== -1 && segEnd > pos && text.charCodeAt(segEnd - 1) === 13) segEnd -= 1;
+        const seg = text.slice(pos, segEnd);
+        const cq = seg.indexOf(',"');
         let runEnd;
         let runKind; // 0: a quoted field follows, 1: line break, 2: end
         if (cq === -1) {
@@ -260,22 +270,14 @@ export function run(input) {
             runEnd = nn;
             runKind = 1;
           }
-        } else if (nn === -1) {
-          runEnd = cq;
-          runKind = 0;
-        } else if (cq < nn) {
-          runEnd = cq;
-          runKind = 0;
         } else {
-          runEnd = nn;
-          runKind = 1;
+          runEnd = pos + cq;
+          runKind = 0;
         }
-        let segEnd = runEnd;
-        // A trailing CR just before the line break is the CRLF break, not
-        // part of a field.
-        if (runKind === 1 && segEnd > pos && text.charCodeAt(segEnd - 1) === 13) segEnd -= 1;
-        const seg = text.slice(pos, segEnd);
-        if (seg.indexOf('\r') !== -1) {
+        // The part of the line this run covers: up to the comma that
+        // opens the quoted field, or the whole line.
+        const head = runKind === 0 ? seg.slice(0, cq) : seg;
+        if (head.indexOf('\r') !== -1) {
           // A stray CR sits in the run: fall back to one field at a time,
           // which drops each stray CR with its error.
           const r = scanUnquoted('');
@@ -283,13 +285,13 @@ export function run(input) {
           if (r[1] !== COMMA) recordDone = true;
           continue;
         }
-        const runFields = seg.split(',');
+        const runFields = head.split(',');
         // Spread is the fast push, but a huge run would overflow the call
         // stack, so long runs push one field at a time.
         if (runFields.length < 1000) fields.push(...runFields);
         else for (let i = 0; i < runFields.length; i++) fields.push(runFields[i]);
         if (runKind === 0) {
-          pos = cq + 1;
+          pos = runEnd + 1;
         } else if (runKind === 1) {
           pos = nn + 1;
           line += 1;
